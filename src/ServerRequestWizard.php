@@ -43,7 +43,7 @@ final class ServerRequestWizard
      * @param array $serverParams
      * @param array $cookies
      * @param array $uploadedFiles
-     * @param resource|null $bodyResource
+     * @param RawBodyReader|null $rawBodyReader
      * @return ServerRequestInterface
      */
     public function create(
@@ -52,7 +52,7 @@ final class ServerRequestWizard
         array $serverParams,
         array $cookies,
         array $uploadedFiles,
-        $bodyResource = null
+        ?RawBodyReader $rawBodyReader = null
     ): ServerRequestInterface {
         $method = array_key_exists('REQUEST_METHOD', $serverParams) ? $serverParams['REQUEST_METHOD'] : 'GET';
         $https = array_key_exists('HTTPS', $serverParams);
@@ -99,7 +99,7 @@ final class ServerRequestWizard
         if (array_key_exists('SERVER_PROTOCOL', $serverParams)) {
             $pos = strpos($serverParams['SERVER_PROTOCOL'], '/');
             if ($pos !== false) {
-                $version = substr($serverParams['SERVER_PROTOCOL'], $pos);
+                $version = substr($serverParams['SERVER_PROTOCOL'], $pos + 1);
             }
         }
 
@@ -108,19 +108,8 @@ final class ServerRequestWizard
             ->withProtocolVersion($version)
             ->withQueryParams($queryParams)
             ->withCookieParams($cookies)
+            ->withParsedBody($parsedBody)
         ;
-
-        if (!is_resource($bodyResource)) {
-            rewind($bodyResource);
-            $temp = fopen('php://temp', 'wb+');
-            $input = fopen('php://input', 'r');
-            stream_copy_to_stream($input, $temp);
-            fclose($input);
-            rewind($temp);
-            $request = $request->withBody(
-                $this->streamFactory->createStreamFromResource($temp)
-            );
-        }
 
         $cookiesHeader = [];
         foreach ($cookies as $name => $value) {
@@ -163,19 +152,24 @@ final class ServerRequestWizard
             $values = array_map('trim', explode(',', $value));
             $request = $request->withHeader($header, $values);
         }
-        if (!$request->hasHeader('Content-Type') && array_key_exists('CONTENT_TYPE', $serverParams)) {
-            $request = $request->withHeader('Content-Type', $serverParams['CONTENT_TYPE']);
-        }
-        if ($request->hasHeader('Content-Type')) {
-            $contentType = trim(explode(';', $request->getHeaderLine('Content-Type'))[0]);
-            if (in_array($contentType, ['application/x-www-form-urlencoded', 'multipart/form-data'])) {
-                $request = $request->withParsedBody($parsedBody);
-            }
-        }
         if ($uploadedFiles) {
             $request = $request->withUploadedFiles($this->getUploadedFiles($uploadedFiles));
         }
-        return $request;
+
+        if (is_null($rawBodyReader)) {
+            return $request;
+        }
+        $rawBodyReader->rewind();
+        $temp = fopen('php://temp', 'wb+');
+        while (!$rawBodyReader->eof()) {
+            fwrite($temp, $rawBodyReader->read(4096));
+        }
+        $rawBodyReader->close();
+        rewind($temp);
+
+        return $request->withBody(
+            $this->streamFactory->createStreamFromResource($temp)
+        );
     }
 
     private function getUploadedFiles(array $files): array

@@ -3,7 +3,7 @@
 # Install
 
 ```text
-composer require ddrv/server-request-wizard:^1.0
+composer require ddrv/server-request-wizard:^2.0
 ```
 
 # Usage
@@ -19,5 +19,6 @@ composer require ddrv/server-request-wizard:^1.0
 
 $wizard = new Ddrv\ServerRequestWizard\ServerRequestWizard($serverRequestFactory, $streamFactory, $UploadedFileFactory);
 
-$request = $wizard->create($_GET, $_POST, $_SERVER, $_COOKIE, $_FILES);
+$body = new Ddrv\ServerRequestWizard\FileReader('php://input');
+$request = $wizard->create($_GET, $_POST, $_SERVER, $_COOKIE, $_FILES, $body);
 ```
