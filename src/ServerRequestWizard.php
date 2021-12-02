@@ -37,13 +37,28 @@ final class ServerRequestWizard
         $this->fileFactory = $fileFactory;
     }
 
-    public function create(array $get, array $post, array $server, array $cookies, array $files): ServerRequestInterface
-    {
-        $method = array_key_exists('REQUEST_METHOD', $server) ? $server['REQUEST_METHOD'] : 'GET';
-        $https = array_key_exists('HTTPS', $server);
-        $host = array_key_exists('HTTP_HOST', $server) ? $server['HTTP_HOST'] : null;
-        if (!$host && array_key_exists('SERVER_NAME', $server)) {
-            $host = $server['SERVER_NAME'];
+    /**
+     * @param array $queryParams
+     * @param array $parsedBody
+     * @param array $serverParams
+     * @param array $cookies
+     * @param array $uploadedFiles
+     * @param resource|null $bodyResource
+     * @return ServerRequestInterface
+     */
+    public function create(
+        array $queryParams,
+        array $parsedBody,
+        array $serverParams,
+        array $cookies,
+        array $uploadedFiles,
+        $bodyResource = null
+    ): ServerRequestInterface {
+        $method = array_key_exists('REQUEST_METHOD', $serverParams) ? $serverParams['REQUEST_METHOD'] : 'GET';
+        $https = array_key_exists('HTTPS', $serverParams);
+        $host = array_key_exists('HTTP_HOST', $serverParams) ? $serverParams['HTTP_HOST'] : null;
+        if (!$host && array_key_exists('SERVER_NAME', $serverParams)) {
+            $host = $serverParams['SERVER_NAME'];
         }
         $host = (string)$host;
         $port = null;
@@ -60,7 +75,11 @@ final class ServerRequestWizard
             }
         }
         if (is_null($port)) {
-            $port = array_key_exists('SERVER_PORT', $server) ? (int)$server['SERVER_PORT'] : ($https ? 443 : 80);
+            if (array_key_exists('SERVER_PORT', $serverParams)) {
+                $port = (int)$serverParams['SERVER_PORT'];
+            } else {
+                $port = $https ? 443 : 80;
+            }
         }
         $uri = 'http';
         if ($https) {
@@ -73,57 +92,69 @@ final class ServerRequestWizard
         if (($port !== 80 && !$https) || ($port !== 443 && $https)) {
             $uri .= ':' . $port;
         }
-        if (array_key_exists('REQUEST_URI', $server)) {
-            $uri .= '/' . ltrim($server['REQUEST_URI'], '/');
+        if (array_key_exists('REQUEST_URI', $serverParams)) {
+            $uri .= '/' . ltrim($serverParams['REQUEST_URI'], '/');
         }
         $version = '1.1';
-        if (array_key_exists('SERVER_PROTOCOL', $server)) {
-            $pos = strpos($server['SERVER_PROTOCOL'], '/');
+        if (array_key_exists('SERVER_PROTOCOL', $serverParams)) {
+            $pos = strpos($serverParams['SERVER_PROTOCOL'], '/');
             if ($pos !== false) {
-                $version = substr($server['SERVER_PROTOCOL'], $pos);
+                $version = substr($serverParams['SERVER_PROTOCOL'], $pos);
             }
         }
 
-        $temp = fopen('php://temp', 'wb+');
-        $input = fopen('php://input', 'r');
-        stream_copy_to_stream($input, $temp);
-        fclose($input);
-        rewind($temp);
-        $body = $this->streamFactory->createStreamFromResource($temp);
         $request = $this->requestFactory
-            ->createServerRequest($method, $uri, $server)
+            ->createServerRequest($method, $uri, $serverParams)
             ->withProtocolVersion($version)
-            ->withBody($body)
-            ->withQueryParams($get)
+            ->withQueryParams($queryParams)
             ->withCookieParams($cookies)
         ;
+
+        if (!is_resource($bodyResource)) {
+            rewind($bodyResource);
+            $temp = fopen('php://temp', 'wb+');
+            $input = fopen('php://input', 'r');
+            stream_copy_to_stream($input, $temp);
+            fclose($input);
+            rewind($temp);
+            $request = $request->withBody(
+                $this->streamFactory->createStreamFromResource($temp)
+            );
+        }
+
         $cookiesHeader = [];
         foreach ($cookies as $name => $value) {
             $cookiesHeader[] = urlencode($name) . '=' . urlencode($value);
         }
         if ($cookiesHeader) {
-            $server['HTTP_COOKIE'] = implode(',', $cookiesHeader);
+            $serverParams['HTTP_COOKIE'] = implode(',', $cookiesHeader);
         }
-        if (!array_key_exists('HTTP_AUTHORIZATION', $server)) {
-            if (array_key_exists('REDIRECT_HTTP_AUTHORIZATION', $server)) {
-                $server['HTTP_AUTHORIZATION'] = $server['REDIRECT_HTTP_AUTHORIZATION'];
-            } elseif (array_key_exists('PHP_AUTH_USER', $server)) {
-                $auth = $server['PHP_AUTH_USER'] . ':';
-                if (array_key_exists('PHP_AUTH_PW', $server)) {
-                    $auth .= $server['PHP_AUTH_PW'];
+        if (!array_key_exists('HTTP_AUTHORIZATION', $serverParams)) {
+            if (array_key_exists('REDIRECT_HTTP_AUTHORIZATION', $serverParams)) {
+                $serverParams['HTTP_AUTHORIZATION'] = $serverParams['REDIRECT_HTTP_AUTHORIZATION'];
+            } elseif (array_key_exists('PHP_AUTH_USER', $serverParams)) {
+                $auth = $serverParams['PHP_AUTH_USER'] . ':';
+                if (array_key_exists('PHP_AUTH_PW', $serverParams)) {
+                    $auth .= $serverParams['PHP_AUTH_PW'];
                 }
-                $server['HTTP_AUTHORIZATION'] = 'Basic ' . base64_encode($auth);
-            } elseif (array_key_exists('PHP_AUTH_DIGEST', $server)) {
-                $server['HTTP_AUTHORIZATION'] = $server['PHP_AUTH_DIGEST'];
+                $serverParams['HTTP_AUTHORIZATION'] = 'Basic ' . base64_encode($auth);
+            } elseif (array_key_exists('PHP_AUTH_DIGEST', $serverParams)) {
+                $serverParams['HTTP_AUTHORIZATION'] = $serverParams['PHP_AUTH_DIGEST'];
             }
         }
         $specificHeaders = ['CONTENT_TYPE', 'CONTENT_LENGTH'];
         foreach ($specificHeaders as $specificHeader) {
-            if (array_key_exists($specificHeader, $server) && !array_key_exists('HTTP_' . $specificHeader, $server)) {
-                $server['HTTP_' . $specificHeader] = $server[$specificHeader];
+            $headerServerParam = 'HTTP_' . $specificHeader;
+            if (!array_key_exists($specificHeader, $serverParams)) {
+                continue;
             }
+            if (array_key_exists($headerServerParam, $serverParams)) {
+                continue;
+            }
+            $serverParams[$headerServerParam] = $serverParams[$specificHeader];
         }
-        foreach ($server as $key => $value) {
+
+        foreach ($serverParams as $key => $value) {
             if (strpos($key, 'HTTP_') !== 0) {
                 continue;
             }
@@ -132,17 +163,17 @@ final class ServerRequestWizard
             $values = array_map('trim', explode(',', $value));
             $request = $request->withHeader($header, $values);
         }
-        if (!$request->hasHeader('Content-Type') && array_key_exists('CONTENT_TYPE', $server)) {
-            $request = $request->withHeader('Content-Type', $server['CONTENT_TYPE']);
+        if (!$request->hasHeader('Content-Type') && array_key_exists('CONTENT_TYPE', $serverParams)) {
+            $request = $request->withHeader('Content-Type', $serverParams['CONTENT_TYPE']);
         }
         if ($request->hasHeader('Content-Type')) {
             $contentType = trim(explode(';', $request->getHeaderLine('Content-Type'))[0]);
             if (in_array($contentType, ['application/x-www-form-urlencoded', 'multipart/form-data'])) {
-                $request = $request->withParsedBody($post);
+                $request = $request->withParsedBody($parsedBody);
             }
         }
-        if ($files) {
-            $request = $request->withUploadedFiles($this->getUploadedFiles($files));
+        if ($uploadedFiles) {
+            $request = $request->withUploadedFiles($this->getUploadedFiles($uploadedFiles));
         }
         return $request;
     }
@@ -171,7 +202,7 @@ final class ServerRequestWizard
                 }
             } else {
                 $uploads[$field] = $this->fileFactory->createUploadedFile(
-                    $stream = $this->streamFactory->createStreamFromFile($file['tmp_name'], 'r'),
+                    $this->streamFactory->createStreamFromFile($file['tmp_name']),
                     array_key_exists('size', $file) ? (int)$file['size'] : null,
                     $file['error'],
                     array_key_exists('name', $file) ? (string)$file['name'] : null,
